@@ -4,13 +4,15 @@
 # Run this AFTER the original preprocess.py pipeline has already produced
 # cleaned output. This script picks up from messages_community.csv and adds:
 #
-#   1. build_thread_structure()       – flag initial posts vs replies
-#   2. label_thread_success()         – threads with 0 replies = negative class
-#   3. normalize_text()               – lowercase, whitespace, repeated chars
-#   4. filter_short_initial_posts()   – drop threads whose OP < 5 words
-#   5. sanity_check_lengths()         – warn if stripping removed too much text
-#   6. extract_annotation_sample()    – 500 replies for manual annotation
-#   7. save_outputs()                 – write final dataset + annotation files
+#   1. load_cleaned_data()            – load messages_community.csv
+#   2. filter_intro_groups()          – drop welcome / off-topic threads
+#   3. build_thread_structure()       – flag initial posts vs replies
+#   4. label_thread_success()         – threads with 0 replies = negative class
+#   5. normalize_text()               – lowercase, whitespace, repeated chars
+#   6. filter_short_initial_posts()   – drop threads whose OP < 5 words
+#   7. sanity_check_lengths()         – warn on suspiciously short messages
+#   8. extract_annotation_sample()    – 500 replies for manual annotation
+#   9. save_outputs()                 – write final dataset + annotation files
 #
 # Input:  output/messages_community.csv  (from original preprocess.py)
 # Output: output/messages_structured.csv
@@ -24,16 +26,18 @@ import os
 import re
 import pandas as pd
 
+from config import INTRO_GROUP_KEYWORDS
+
 # ── Config ────────────────────────────────────────────────────────────────────
 # Update these to match your config.py if they differ
-INPUT_FILE   = os.path.join("output", "preprocessed", "messages_community.csv")
-OUTPUT_DIR   = "output"
-TEXT_COLUMN  = "MessageText"
-DATE_COLUMN  = "PostDate"        # first date column from config DATE_COLUMNS
-ANNOTATION_N      = 500          # number of replies to sample for annotation
-USER_REPLY_CAP    = 4            # max times a single user can appear in the sample
-RANDOM_STATE      = 42           # for reproducibility
-MIN_WORDS_INITIAL = 5            # threads whose initial post is below this are dropped
+INPUT_FILE    = os.path.join("output", "preprocessed", "messages_community.csv")
+OUTPUT_DIR    = "output"
+TEXT_COLUMN   = "MessageText"
+DATE_COLUMN   = "PostDate"        # first date column from config DATE_COLUMNS
+ANNOTATION_N      = 500           # number of replies to sample for annotation
+USER_REPLY_CAP    = 4             # max times a single user can appear in the sample
+RANDOM_STATE      = 42            # for reproducibility
+MIN_WORDS_INITIAL = 5             # threads whose initial post is below this are dropped
 
 
 def ensure_output_dir():
@@ -60,7 +64,38 @@ def load_cleaned_data() -> pd.DataFrame:
     return df
 
 
-# ── Step 2: Build thread structure ───────────────────────────────────────────
+# ── Step 2: Filter intro / welcome / off-topic groups ────────────────────────
+
+def filter_intro_groups(
+    messages: pd.DataFrame,
+    keywords: set = INTRO_GROUP_KEYWORDS,
+) -> pd.DataFrame:
+    """
+    Drops threads belonging to intro/welcome/off-topic groups.
+    Relies on the 'GroupName' column written by preprocess.py's save_outputs().
+    Skips gracefully if the column is absent or empty.
+    """
+    print("\n[2] Filtering intro / welcome / off-topic groups...")
+
+    if "GroupName" not in messages.columns or messages["GroupName"].fillna("").eq("").all():
+        print("  SKIP: 'GroupName' column not found or empty — re-run preprocess.py to populate it.")
+        return messages
+
+    mask = messages["GroupName"].fillna("").str.lower().apply(
+        lambda g: any(kw in g for kw in keywords)
+    )
+    intro_thread_ids = messages.loc[mask, "ForumTopicID"].unique()
+
+    before = messages["ForumTopicID"].nunique()
+    messages = messages[~messages["ForumTopicID"].isin(intro_thread_ids)].copy()
+    print(
+        f"  Removed {before - messages['ForumTopicID'].nunique()} intro/welcome/off-topic threads — "
+        f"{messages['ForumTopicID'].nunique()} threads remain."
+    )
+    return messages
+
+
+# ── Step 3: Build thread structure ───────────────────────────────────────────
 
 def build_thread_structure(messages: pd.DataFrame) -> pd.DataFrame:
     """
@@ -68,7 +103,7 @@ def build_thread_structure(messages: pd.DataFrame) -> pd.DataFrame:
       - is_initial_post (bool): True for the first message in each thread
       - reply_index (int):      0 for initial post, 1..N for replies
     """
-    print("\n[2] Building thread structure...")
+    print("\n[3] Building thread structure...")
 
     if DATE_COLUMN not in messages.columns:
         raise ValueError(
@@ -91,7 +126,7 @@ def build_thread_structure(messages: pd.DataFrame) -> pd.DataFrame:
     return messages
 
 
-# ── Step 3: Label thread success ─────────────────────────────────────────────
+# ── Step 4: Label thread success ─────────────────────────────────────────────
 
 def label_thread_success(messages: pd.DataFrame) -> pd.DataFrame:
     """
@@ -107,7 +142,7 @@ def label_thread_success(messages: pd.DataFrame) -> pd.DataFrame:
     Threads with no replies are KEPT as they form a natural negative class
     for the classification task.
     """
-    print("\n[3] Labeling thread success...")
+    print("\n[4] Labeling thread success...")
 
     reply_counts = (
         messages[~messages["is_initial_post"]]
@@ -128,7 +163,7 @@ def label_thread_success(messages: pd.DataFrame) -> pd.DataFrame:
     return messages
 
 
-# ── Step 4: Normalize text ────────────────────────────────────────────────────
+# ── Step 5: Normalize text ────────────────────────────────────────────────────
 
 def _normalize_dutch_text(text: str) -> str:
     """
@@ -157,7 +192,7 @@ def normalize_text(messages: pd.DataFrame) -> pd.DataFrame:
     Adds a 'text_normalized' column for downstream feature extraction.
     The original TEXT_COLUMN is preserved for annotation and review.
     """
-    print("\n[4] Normalizing text...")
+    print("\n[5] Normalizing text...")
 
     if TEXT_COLUMN not in messages.columns:
         print(f"  SKIP: column '{TEXT_COLUMN}' not found.")
@@ -171,7 +206,7 @@ def normalize_text(messages: pd.DataFrame) -> pd.DataFrame:
     return messages
 
 
-# ── Step 5: Filter short initial posts ───────────────────────────────────────
+# ── Step 6: Filter short initial posts ───────────────────────────────────────
 
 def filter_short_initial_posts(
     messages: pd.DataFrame,
@@ -182,7 +217,7 @@ def filter_short_initial_posts(
     Removes the full thread (initial post + all replies) to avoid orphaned rows.
     Word count is computed on 'text_normalized'.
     """
-    print(f"\n[5] Filtering threads with initial posts < {min_words} words...")
+    print(f"\n[6] Filtering threads with initial posts < {min_words} words...")
 
     wc = messages["text_normalized"].fillna("").apply(lambda x: len(x.split()))
     short_thread_ids = messages.loc[
@@ -201,7 +236,7 @@ def filter_short_initial_posts(
     return messages
 
 
-# ── Step 6: Sanity check ──────────────────────────────────────────────────────
+# ── Step 7: Sanity check ──────────────────────────────────────────────────────
 
 def sanity_check_lengths(messages: pd.DataFrame) -> None:
     """
@@ -209,7 +244,7 @@ def sanity_check_lengths(messages: pd.DataFrame) -> None:
     and replies so you can spot any suspiciously short or empty messages
     that slipped through the original pipeline.
     """
-    print("\n[6] Sanity checking message lengths...")
+    print("\n[7] Sanity checking message lengths...")
 
     wc = messages["text_normalized"].fillna("").apply(lambda x: len(x.split()))
     messages = messages.copy()
@@ -235,7 +270,7 @@ def sanity_check_lengths(messages: pd.DataFrame) -> None:
         )
 
 
-# ── Step 7: Extract annotation sample ────────────────────────────────────────
+# ── Step 8: Extract annotation sample ────────────────────────────────────────
 
 def extract_annotation_sample(
     messages: pd.DataFrame,
@@ -253,7 +288,7 @@ def extract_annotation_sample(
          prevent the sample from being dominated by highly active users.
          Corpus analysis showed that 161 users (25.6% of repliers) accounted
          for 91.3% of all eligible replies; a cap of 4 was chosen to retain
-         all 630 unique users while keeping the pool above the 500-sample target.
+         all 549 unique users while keeping the pool above the 500-sample target.
       3. Sample at most one reply per thread to preserve independence.
       4. Draw a random sample of `n` from the resulting pool.
 
@@ -263,7 +298,7 @@ def extract_annotation_sample(
 
     random_state=42 ensures reproducibility — required for the methodology chapter.
     """
-    print(f"\n[7] Extracting annotation sample (n={n}, user_cap={user_cap})...")
+    print(f"\n[8] Extracting annotation sample (n={n}, user_cap={user_cap})...")
 
     # Identify the original poster for each thread
     initial_posters = (
@@ -345,13 +380,13 @@ def extract_annotation_sample(
     return sample
 
 
-# ── Step 8: Save structured dataset ──────────────────────────────────────────
+# ── Step 9: Save structured dataset ──────────────────────────────────────────
 
 def save_outputs(messages: pd.DataFrame):
-    print("\n[8] Saving structured dataset...")
+    print("\n[9] Saving structured dataset...")
 
     # Drop any temporary helper columns before export
-    drop_cols = ["_wc"]
+    drop_cols = ["_wc", "GroupName"]
     messages_clean = messages.drop(columns=drop_cols, errors="ignore")
     write_csv(messages_clean, "messages_structured.csv")
     print(
@@ -366,6 +401,7 @@ def run():
     ensure_output_dir()
 
     messages = load_cleaned_data()
+    messages = filter_intro_groups(messages)
     messages = build_thread_structure(messages)
     messages = label_thread_success(messages)
     messages = normalize_text(messages)

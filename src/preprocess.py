@@ -9,7 +9,7 @@
 #   5. filter_text_quality()   – min length, language
 #   6. anonymize_ids()         – replace PosterID with user_N
 #   7. anonymize_text_columns()– NER-based text anonymization
-#   8. save_outputs()          – attach GroupName, write per-account CSVs
+#   8. save_outputs()          – attach GroupName, write per-account CSVs + review files
 #
 # Note: intro/welcome group filtering is handled in postprocess.py (step 2),
 # so that it can be adjusted without re-running the expensive anonymization step.
@@ -29,7 +29,6 @@ from config import (
     CSV_FILES, ID_COLUMN, DATE_COLUMNS, TEXT_COLUMN,
     SUPERUSER_ACCOUNT_IDS, COMMUNITY_ACCOUNT_IDS,
     MODERATOR_POSTER_IDS,
-    INTRO_GROUP_KEYWORDS,
     MIN_WORD_COUNT, LANGUAGE_FILTER, TARGET_LANGUAGE,
     ANONYMIZE_TEXT, REPLACE_ORIGINAL_TEXT, EXPORT_ENTITY_REVIEW,
 )
@@ -106,14 +105,22 @@ def build_topic_account_map(dfs: dict[str, pd.DataFrame]) -> dict:
     groups = groups.rename(columns={"Name": "GroupName"})
 
     merged = topics.merge(groups, on="ForumGroupID", how="left")
-    merged = (
+
+    # topic_to_account requires a valid AccountID — filter to rows that have one
+    with_account = (
         merged
         .dropna(subset=["AccountID"])
         .drop_duplicates(subset=["ForumTopicID"])
     )
+    topic_to_account = dict(zip(with_account["ForumTopicID"], with_account["AccountID"].astype(int)))
 
-    topic_to_account = dict(zip(merged["ForumTopicID"], merged["AccountID"].astype(int)))
-    topic_to_group   = dict(zip(merged["ForumTopicID"], merged["GroupName"].fillna("")))
+    # topic_to_group only needs ForumTopicID → GroupName; no AccountID constraint
+    with_topic = (
+        merged
+        .dropna(subset=["ForumTopicID"])
+        .drop_duplicates(subset=["ForumTopicID"])
+    )
+    topic_to_group = dict(zip(with_topic["ForumTopicID"].astype(int), with_topic["GroupName"].fillna("")))
 
     return topic_to_account, topic_to_group
 
@@ -187,35 +194,7 @@ def remove_moderators(
     return messages
 
 
-# ── Step 4: Remove introduction / welcome groups ──────────────────────────────
-
-def get_intro_topic_ids(
-    topic_to_group: dict,
-    keywords: set = INTRO_GROUP_KEYWORDS,
-) -> set:
-    """
-    Returns ForumTopicIDs whose group name contains any intro keyword.
-    """
-    intro_ids = {
-        tid
-        for tid, gname in topic_to_group.items()
-        if any(kw in gname.lower() for kw in keywords)
-    }
-    print(f"  Identified {len(intro_ids)} intro/welcome topics to exclude.")
-    return intro_ids
-
-
-def remove_intro_topics(
-    messages: pd.DataFrame,
-    intro_topic_ids: set,
-) -> pd.DataFrame:
-    before = len(messages)
-    messages = messages[~messages["ForumTopicID"].isin(intro_topic_ids)].copy()
-    print(f"  Removed intro topics: {before} → {len(messages)} messages.")
-    return messages
-
-
-# ── Step 5: Clean dataframe (HTML stripping, date parsing) ───────────────────
+# ── Step 4: Clean dataframe (HTML stripping, date parsing) ───────────────────
 
 def _parse_html(text: str) -> str:
     return BeautifulSoup(str(text), "html.parser").get_text(separator=" ").strip()
@@ -444,8 +423,7 @@ def anonymize_text_columns(df: pd.DataFrame, columns: list[str] | None = None) -
 
 # ── Step 9: Save outputs ─────────────────────────────────────────
 
-# AFTER
-def save_outputs(messages: pd.DataFrame, topic_to_account: dict):
+def save_outputs(messages: pd.DataFrame, topic_to_account: dict, topic_to_group: dict):
     messages = messages.copy()
     integrated_path = os.path.join(OUTPUT_DIR, "integrated_messages.csv")
 
@@ -466,13 +444,16 @@ def save_outputs(messages: pd.DataFrame, topic_to_account: dict):
             messages["AccountID"].isin(COMMUNITY_ACCOUNT_IDS)
         ].drop(columns=["AccountID"])
 
+    community = community.copy()
+    community["GroupName"] = community["ForumTopicID"].apply(
+        lambda x: topic_to_group.get(int(float(x)), "") if pd.notna(x) else ""
+    )
     write_csv(community, "messages_community.csv")
     print(f"  Wrote {len(community)} messages → messages_community.csv")
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
-# AFTER
 def run_pipeline():
     ensure_output_dir()
 
@@ -493,7 +474,6 @@ def run_pipeline():
 
     if using_integrated:
         print("\n[3] Skipping superuser removal — already applied in integrate_datasets.py")
-        print("\n[4] Skipping intro group removal — already applied in integrate_datasets.py")
     else:
         # 3. Superuser removal
         print("\n[3] Identifying superusers…")
@@ -503,12 +483,6 @@ def run_pipeline():
         # 3b. Remove confirmed moderators
         print("\n[3b] Removing moderators…")
         dfs["messages"] = remove_moderators(dfs["messages"])
-
-        # 4. Remove intro/welcome threads
-        print("\n[4] Removing intro/welcome groups…")
-        intro_topic_ids = get_intro_topic_ids(topic_to_group)
-        dfs["messages"] = remove_intro_topics(dfs["messages"], intro_topic_ids)
-        dfs["topics"]   = dfs["topics"][~dfs["topics"]["ForumTopicID"].isin(intro_topic_ids)].copy()
 
     # 5. Clean all DataFrames
     print("\n[5] Cleaning dataframes (HTML, dates, quote stripping)…")
@@ -539,7 +513,7 @@ def run_pipeline():
     for name, df in dfs.items():
         write_csv(df, f"{name}_cleaned.csv")
 
-    save_outputs(dfs["messages"], topic_to_account)
+    save_outputs(dfs["messages"], topic_to_account, topic_to_group)
 
     print("\n✓ Pipeline complete.")
     return dfs

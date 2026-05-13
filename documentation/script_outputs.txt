@@ -150,3 +150,89 @@ Next steps:
   2. Fill in 'label' (SS/NSS) and 'support_type' columns
   3. Share annotation_sample.csv with your second rater
   4. Calculate Cohen's Kappa after both raters are done
+
+  ___________
+  python src/preprocess.py
+preprocess module loaded.
+
+[1] Loading raw data…
+  Loading data/messages.csv
+  Loading data/topics.csv
+  Loading data/groups.csv
+  Loading data/accounts.csv
+
+[2] Building topic → account map…
+
+[3] Identifying superusers…
+  Identified 14 superuser posters to exclude.
+  Removed superusers: 50420 → 48753 messages.
+
+[3b] Removing moderators…
+  Removed 33 moderator-initiated threads.
+  Removed 844 individual moderator messages from other threads.
+  Total removed: 48753 → 47487 messages.
+
+[5] Cleaning dataframes (HTML, dates, quote stripping)…
+
+[5b] Standardizing text…
+
+[6] Filtering text quality…
+  Min-word filter (1): 22277 → 21385 messages.
+
+[7] Anonymizing poster IDs…
+  Anonymized 1060 unique poster IDs.
+
+[8] Anonymizing text…
+
+[9] Saving outputs…
+  Matched 21385/21385 messages to an account.
+  Wrote 21385 messages → messages_community.csv
+
+✓ Pipeline complete.
+(thesis_env)  🐍 thesis_env  claudiagroot@MacBookPro  ~/Documents/Tilburg/Thesis/thesis_project   dev ±  python src/postprocess.py
+
+[1] Loading cleaned data from output/preprocessed/messages_community.csv...
+  Loaded 21385 messages, 2092 threads.
+
+[2] Filtering intro / welcome / off-topic groups...
+  Removed 873 intro/welcome/off-topic threads — 1219 threads remain.
+
+[3] Building thread structure...
+  1219 threads: 1219 initial posts, 12319 replies.
+
+[4] Labeling thread success...
+  Threads with replies:    1117 (positive class candidates)
+  Threads without replies: 102 (negative class)
+
+[5] Normalizing text...
+  Done -> column 'text_normalized' added.
+
+[6] Filtering threads with initial posts < 5 words...
+  Removed 6 threads (41 messages total) — 1213 threads remain.
+
+[7] Sanity checking message lengths...
+  Initial posts: median=112 words, 5th pct=18, 95th pct=542
+  Replies: median=58 words, 5th pct=5, 95th pct=343
+  WARNING: 279 messages have fewer than 3 words. Consider reviewing these.
+
+[8] Extracting annotation sample (n=500, user_cap=4)...
+  Excluded 3535 self-replies.
+  Eligible pool before cap: 8,749 replies from 443 users.
+  After user cap (4): 1,106 replies (140 users affected, 443 unique users retained).
+  After per-thread dedup: 489 replies across 489 threads — INSUFFICIENT for n=500.
+  WARNING: pool size 489 < n=500; sampling all available.
+  Saved: output/annotation_sample.csv
+  annotation_sample.csv: 489 replies ready for labeling.
+  Saved: output/annotation_sample_with_context.csv
+  annotation_sample_with_context.csv: same sample + initial post text.
+
+[9] Saving structured dataset...
+  Saved: output/messages_structured.csv
+  messages_structured.csv: 13497 messages, 1213 threads.
+
+Postprocessing complete.
+Next steps:
+  1. Open output/annotation_sample_with_context.csv
+  2. Fill in 'label' (SS/NSS) and 'support_type' columns
+  3. Share annotation_sample.csv with your second rater
+  4. Calculate Cohen's Kappa after both raters are done
